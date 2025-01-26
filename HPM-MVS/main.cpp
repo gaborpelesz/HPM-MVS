@@ -1,4 +1,5 @@
 #include "main.h"
+#include <filesystem>
 #include "HPM.h"
 
 void GenerateSampleList(const std::string& dense_folder, std::vector<Problem>& problems)
@@ -39,7 +40,7 @@ void ProcessProblem(const std::string& dense_folder, const Problem& problem, boo
     std::stringstream result_path;
     result_path << dense_folder << "/HPM" << "/2333_" << std::setw(8) << std::setfill('0') << problem.ref_image_id;
     std::string result_folder = result_path.str();
-    mkdir(result_folder.c_str());
+    std::filesystem::create_directories(result_folder);
 
     HPM hpm;
     if (geom_consistency) {
@@ -458,7 +459,7 @@ void ProcessProblem(const std::string& dense_folder, const Problem& problem, boo
                 hpm.CudaPlanarPriorInitializationSupplement(planeParams_tri, mask_tri, prior_supplement_origin);
                 hpm.RunPatchMatch();
 
-                //ÊÍ·ÅÄÚ´æ
+                //ï¿½Í·ï¿½ï¿½Ú´ï¿½
                 mask_tri.release();
                 delete(prior_supplement_origin);
                 pointcloud->clear();
@@ -645,7 +646,7 @@ int main(int argc, char** argv)
     GenerateSampleList(dense_folder, problems);
 
     std::string output_folder = dense_folder + std::string("/HPM");
-    mkdir(output_folder.c_str());
+    std::filesystem::create_directories(output_folder);
 
     size_t num_images = problems.size();
     std::cout << "There are " << num_images << " problems needed to be processed!" << std::endl;
