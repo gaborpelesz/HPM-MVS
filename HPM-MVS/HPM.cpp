@@ -1300,9 +1300,9 @@ void HPM::ReleaseProblemCudaMemory() {
 void HPM::ReleaseProblemHostMemory() {
     //delete(plane_hypotheses_host);
     //delete(costs_host);
-    images.swap(std::vector<cv::Mat>());
-    cameras.swap(std::vector<Camera>());
-    depths.swap(std::vector<cv::Mat>());
+    images = std::vector<cv::Mat>();
+    cameras = std::vector<Camera>();
+    depths = std::vector<cv::Mat>();
     std::cout << "Releasing Host memory..." << std::endl;
 }
 
