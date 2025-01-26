@@ -209,7 +209,7 @@ void ProcessProblem(const std::string& dense_folder, const Problem& problem, boo
                 costs_scale0.release();
                 normals_scale0.release();
                 mask_tri_scale0.release();
-                delete(prior_supplement_scale0);
+                delete[] prior_supplement_scale0;
                 pointcloud->clear();
                 priordepths_scale0.release();
                 priornormals_scale0.release();
@@ -218,7 +218,7 @@ void ProcessProblem(const std::string& dense_folder, const Problem& problem, boo
                 priordepth_upsample_scale0.release();
                 priordepth_upsample_scale0.release();
                 mask_tri_scale0_upsample.release();
-                delete(prior_plane_parameters);
+                delete[] prior_plane_parameters;
                 hpm.ReleasePriorCudaMemory();
 
                 for (int col = 0; col < width; ++col) {
@@ -359,7 +359,7 @@ void ProcessProblem(const std::string& dense_folder, const Problem& problem, boo
                 costs_scale1.release();
                 normals_scale1.release();
                 mask_tri_scale1.release();
-                delete(prior_supplement_scale1);
+                delete[] prior_supplement_scale1;
                 pointcloud->clear();
                 priordepths_scale1.release();
                 priornormals_scale1.release();
@@ -368,7 +368,7 @@ void ProcessProblem(const std::string& dense_folder, const Problem& problem, boo
                 priordepth_upsample_scale1.release();
                 priordepth_upsample_scale1.release();
                 mask_tri_scale1_upsample.release();
-                delete(prior_plane_parameters);
+                delete[] prior_plane_parameters;
                 hpm.ReleasePriorCudaMemory();
 
 
@@ -461,7 +461,7 @@ void ProcessProblem(const std::string& dense_folder, const Problem& problem, boo
 
                 //�ͷ��ڴ�
                 mask_tri.release();
-                delete(prior_supplement_origin);
+                delete[] prior_supplement_origin;
                 pointcloud->clear();
                 priordepths.release();
                 hpm.ReleasePriorCudaMemory();
