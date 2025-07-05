@@ -14,8 +14,7 @@ else()
     message(FATAL_ERROR "-- CUDA NOT FOUND: Fatal error")
 endif()
 
-
-find_package(OpenCV REQUIRED)
+find_package(OpenCV REQUIRED core imgproc imgcodecs)
 find_package(PCL 1.7 REQUIRED)
 
 include_directories(${PCL_INCLUDE_DIRS})
