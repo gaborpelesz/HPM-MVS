@@ -56,8 +56,6 @@ target_link_libraries(HPM
     ${PCL_LIBRARIES}
     )
 
-set_target_properties(HPM
-    PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 target_include_directories(HPM
     PUBLIC
     ${OpenCV_INCLUDE_DIRS}
