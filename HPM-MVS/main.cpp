@@ -1,6 +1,7 @@
 #include "main.h"
 #include <filesystem>
 #include "HPM.h"
+#include "bench_timer.h"
 
 void GenerateSampleList(const std::string& dense_folder, std::vector<Problem>& problems)
 {
@@ -35,8 +36,14 @@ void GenerateSampleList(const std::string& dense_folder, std::vector<Problem>& p
 
 void ProcessProblem(const std::string& dense_folder, const Problem& problem, bool geom_consistency, bool planar_prior, bool multi_geometrty = false)
 {
+    BENCH_PHASE("image_pass", "image=%08d pass=%s", problem.ref_image_id,
+                geom_consistency ? (multi_geometrty ? "multi-geometry" : "geom")
+                                 : (planar_prior ? "planar_prior" : "photometric"));
     std::cout << "Processing image " << std::setw(8) << std::setfill('0') << problem.ref_image_id << "..." << std::endl;
-    cudaSetDevice(0);
+    {
+        BENCH_PHASE("device_init");
+        cudaSetDevice(0);
+    }
     std::stringstream result_path;
     result_path << dense_folder << "/HPM" << "/2333_" << std::setw(8) << std::setfill('0') << problem.ref_image_id;
     std::string result_folder = result_path.str();
@@ -46,10 +53,19 @@ void ProcessProblem(const std::string& dense_folder, const Problem& problem, boo
     if (geom_consistency) {
         hpm.SetGeomConsistencyParams(multi_geometrty);
     }
-    hpm.InuputInitialization(dense_folder, problem);
+    {
+        BENCH_PHASE("input_load");
+        hpm.InuputInitialization(dense_folder, problem);
+    }
 
-    hpm.CudaSpaceInitialization(dense_folder, problem);
-    hpm.RunPatchMatch();
+    {
+        BENCH_PHASE("device_upload");
+        hpm.CudaSpaceInitialization(dense_folder, problem);
+    }
+    {
+        BENCH_PHASE("patchmatch");
+        hpm.RunPatchMatch();
+    }
 
     const int width = hpm.GetReferenceImageWidth();
     const int height = hpm.GetReferenceImageHeight();
@@ -61,13 +77,16 @@ void ProcessProblem(const std::string& dense_folder, const Problem& problem, boo
     float4 plane_hypothesis;
     float4 tmp_n4;
 
-    for (int col = 0; col < width; ++col) {
-        for (int row = 0; row < height; ++row) {
-            int center = row * width + col;
-            plane_hypothesis = hpm.GetPlaneHypothesis(center);
-            depths(row, col) = plane_hypothesis.w;
-            normals(row, col) = cv::Vec3f(plane_hypothesis.x, plane_hypothesis.y, plane_hypothesis.z);
-            costs(row, col) = hpm.GetCost(center);
+    {
+        BENCH_PHASE("result_readback");
+        for (int col = 0; col < width; ++col) {
+            for (int row = 0; row < height; ++row) {
+                int center = row * width + col;
+                plane_hypothesis = hpm.GetPlaneHypothesis(center);
+                depths(row, col) = plane_hypothesis.w;
+                normals(row, col) = cv::Vec3f(plane_hypothesis.x, plane_hypothesis.y, plane_hypothesis.z);
+                costs(row, col) = hpm.GetCost(center);
+            }
         }
     }
 
@@ -78,6 +97,7 @@ void ProcessProblem(const std::string& dense_folder, const Problem& problem, boo
         PointCloudPtr pointcloud(new pcl::PointCloud<pcl::PointXY>);
         for (int i = 2 - scale; i <= 2; i++) {
             if (i == 0) {
+                BENCH_PHASE_BEGIN(prior_level0, "prior_build", "level=%d", 0);
                 std::cout << "Scale 0 prior generating..." << std::endl;
                 cv::Mat_<float>depths_scale0;
                 cv::Mat_<float>costs_scale0;
@@ -172,7 +192,10 @@ void ProcessProblem(const std::string& dense_folder, const Problem& problem, boo
                 cv::Mat_<float>priordepth_upsample_scale0 = cv::Mat::zeros(height, width, CV_32FC1);
                 cv::Mat_<cv::Vec3f>priornormal_upsample_scale0 = cv::Mat::zeros(height, width, CV_32FC3);
                 std::cout << "Running JBU..." << std::endl;
-                hpm.JointBilateralUpsampling(image_float, priordepths_scale0, priordepth_upsample_scale0, priornormals_scale0, priornormal_upsample_scale0);
+                {
+                    BENCH_PHASE("upsample", "level=%d", 0);
+                    hpm.JointBilateralUpsampling(image_float, priordepths_scale0, priordepth_upsample_scale0, priornormals_scale0, priornormal_upsample_scale0);
+                }
                 image_float.release();
                 image_uint.release();
                 cv::Mat_<float> mask_tri_scale0_upsample = cv::Mat::zeros(height, width, CV_32FC1);
@@ -203,7 +226,11 @@ void ProcessProblem(const std::string& dense_folder, const Problem& problem, boo
                     }
                 }
                 hpm.ReloadPlanarPriorInitialization(mask_tri_scale0_upsample, prior_plane_parameters);
-                hpm.RunPatchMatch();
+                BENCH_PHASE_END(prior_level0);
+                {
+                    BENCH_PHASE("patchmatch");
+                    hpm.RunPatchMatch();
+                }
 
                 depths_scale0.release();
                 costs_scale0.release();
@@ -221,17 +248,21 @@ void ProcessProblem(const std::string& dense_folder, const Problem& problem, boo
                 delete[] prior_plane_parameters;
                 hpm.ReleasePriorCudaMemory();
 
-                for (int col = 0; col < width; ++col) {
-                    for (int row = 0; row < height; ++row) {
-                        int center = row * width + col;
-                        plane_hypothesis = hpm.GetPlaneHypothesis(center);
-                        depths(row, col) = plane_hypothesis.w;
-                        normals(row, col) = cv::Vec3f(plane_hypothesis.x, plane_hypothesis.y, plane_hypothesis.z);
-                        costs(row, col) = hpm.GetCost(center);
+                {
+                    BENCH_PHASE("result_readback");
+                    for (int col = 0; col < width; ++col) {
+                        for (int row = 0; row < height; ++row) {
+                            int center = row * width + col;
+                            plane_hypothesis = hpm.GetPlaneHypothesis(center);
+                            depths(row, col) = plane_hypothesis.w;
+                            normals(row, col) = cv::Vec3f(plane_hypothesis.x, plane_hypothesis.y, plane_hypothesis.z);
+                            costs(row, col) = hpm.GetCost(center);
+                        }
                     }
                 }
             }
             else if (i == 1) {
+                BENCH_PHASE_BEGIN(prior_level1, "prior_build", "level=%d", 1);
                 std::cout << "Scale 1 prior generating..." << std::endl;
                 cv::Mat_<float>depths_scale1;
                 cv::Mat_<float>costs_scale1;
@@ -322,7 +353,10 @@ void ProcessProblem(const std::string& dense_folder, const Problem& problem, boo
                 cv::Mat_<float>priordepth_upsample_scale1 = cv::Mat::zeros(height, width, CV_32FC1);
                 cv::Mat_<cv::Vec3f>priornormal_upsample_scale1 = cv::Mat::zeros(height, width, CV_32FC3);
                 std::cout << "Running JBU..." << std::endl;
-                hpm.JointBilateralUpsampling(image_float, priordepths_scale1, priordepth_upsample_scale1, priornormals_scale1, priornormal_upsample_scale1);
+                {
+                    BENCH_PHASE("upsample", "level=%d", 1);
+                    hpm.JointBilateralUpsampling(image_float, priordepths_scale1, priordepth_upsample_scale1, priornormals_scale1, priornormal_upsample_scale1);
+                }
                 image_float.release();
                 image_uint.release();
                 cv::Mat_<float> mask_tri_scale1_upsample = cv::Mat::zeros(height, width, CV_32FC1);
@@ -353,7 +387,11 @@ void ProcessProblem(const std::string& dense_folder, const Problem& problem, boo
                     }
                 }
                 hpm.ReloadPlanarPriorInitialization(mask_tri_scale1_upsample, prior_plane_parameters);
-                hpm.RunPatchMatch();
+                BENCH_PHASE_END(prior_level1);
+                {
+                    BENCH_PHASE("patchmatch");
+                    hpm.RunPatchMatch();
+                }
 
                 depths_scale1.release();
                 costs_scale1.release();
@@ -372,18 +410,22 @@ void ProcessProblem(const std::string& dense_folder, const Problem& problem, boo
                 hpm.ReleasePriorCudaMemory();
 
 
-                for (int col = 0; col < width; ++col) {
-                    for (int row = 0; row < height; ++row) {
-                        int center = row * width + col;
-                        plane_hypothesis = hpm.GetPlaneHypothesis(center);
-                        depths(row, col) = plane_hypothesis.w;
-                        normals(row, col) = cv::Vec3f(plane_hypothesis.x, plane_hypothesis.y, plane_hypothesis.z);
-                        costs(row, col) = hpm.GetCost(center);
+                {
+                    BENCH_PHASE("result_readback");
+                    for (int col = 0; col < width; ++col) {
+                        for (int row = 0; row < height; ++row) {
+                            int center = row * width + col;
+                            plane_hypothesis = hpm.GetPlaneHypothesis(center);
+                            depths(row, col) = plane_hypothesis.w;
+                            normals(row, col) = cv::Vec3f(plane_hypothesis.x, plane_hypothesis.y, plane_hypothesis.z);
+                            costs(row, col) = hpm.GetCost(center);
+                        }
                     }
                 }
             }
             else {
 
+                BENCH_PHASE_BEGIN(prior_level2, "prior_build", "level=%d", 2);
                 std::cout << "Scale 2 prior generating..." << std::endl;
                 const cv::Rect imageRC(0, 0, width, height);
                 std::vector<cv::Point> support2DPoints;
@@ -453,11 +495,18 @@ void ProcessProblem(const std::string& dense_folder, const Problem& problem, boo
                         }
                     }
                 }
-                std::string depth_path = result_folder + "/depths_prior.dmb";
-                writeDepthDmb(depth_path, priordepths);
+                {
+                    BENCH_PHASE("depthmap_write.debug");
+                    std::string depth_path = result_folder + "/depths_prior.dmb";
+                    writeDepthDmb(depth_path, priordepths);
+                }
 
                 hpm.CudaPlanarPriorInitializationSupplement(planeParams_tri, mask_tri, prior_supplement_origin);
-                hpm.RunPatchMatch();
+                BENCH_PHASE_END(prior_level2);
+                {
+                    BENCH_PHASE("patchmatch");
+                    hpm.RunPatchMatch();
+                }
 
                 //�ͷ��ڴ�
                 mask_tri.release();
@@ -467,28 +516,34 @@ void ProcessProblem(const std::string& dense_folder, const Problem& problem, boo
                 hpm.ReleasePriorCudaMemory();
 
 
-                for (int col = 0; col < width; ++col) {
-                    for (int row = 0; row < height; ++row) {
-                        int center = row * width + col;
-                        plane_hypothesis = hpm.GetPlaneHypothesis(center);
-                        depths(row, col) = plane_hypothesis.w;
-                        normals(row, col) = cv::Vec3f(plane_hypothesis.x, plane_hypothesis.y, plane_hypothesis.z);
-                        costs(row, col) = hpm.GetCost(center);
+                {
+                    BENCH_PHASE("result_readback");
+                    for (int col = 0; col < width; ++col) {
+                        for (int row = 0; row < height; ++row) {
+                            int center = row * width + col;
+                            plane_hypothesis = hpm.GetPlaneHypothesis(center);
+                            depths(row, col) = plane_hypothesis.w;
+                            normals(row, col) = cv::Vec3f(plane_hypothesis.x, plane_hypothesis.y, plane_hypothesis.z);
+                            costs(row, col) = hpm.GetCost(center);
+                        }
                     }
                 }
             }
         }
     }
-    std::string suffix = "/depths.dmb";
-    if (geom_consistency) {
-        suffix = "/depths_geom.dmb";
+    {
+        BENCH_PHASE("depthmap_write");
+        std::string suffix = "/depths.dmb";
+        if (geom_consistency) {
+            suffix = "/depths_geom.dmb";
+        }
+        std::string depth_path = result_folder + suffix;
+        std::string normal_path = result_folder + "/normals.dmb";
+        std::string cost_path = result_folder + "/costs.dmb";
+        writeDepthDmb(depth_path, depths);
+        writeNormalDmb(normal_path, normals);
+        writeDepthDmb(cost_path, costs);
     }
-    std::string depth_path = result_folder + suffix;
-    std::string normal_path = result_folder + "/normals.dmb";
-    std::string cost_path = result_folder + "/costs.dmb";
-    writeDepthDmb(depth_path, depths);
-    writeNormalDmb(normal_path, normals);
-    writeDepthDmb(cost_path, costs);
     hpm.ReleaseProblemCudaMemory();
     hpm.ReleaseProblemHostMemory();
     depths.release();
@@ -502,6 +557,7 @@ void ProcessProblem(const std::string& dense_folder, const Problem& problem, boo
 
 void RunFusion(std::string& dense_folder, const std::vector<Problem>& problems, bool geom_consistency)
 {
+    BENCH_PHASE("fusion");
     size_t num_images = problems.size();
     std::string image_folder = dense_folder + std::string("/images");
     std::string cam_folder = dense_folder + std::string("/cams");
@@ -517,112 +573,118 @@ void RunFusion(std::string& dense_folder, const std::vector<Problem>& problems, 
     normals.clear();
     masks.clear();
 
-    for (size_t i = 0; i < num_images; ++i) {
-        std::cout << "Reading image " << std::setw(8) << std::setfill('0') << i << "..." << std::endl;
-        std::stringstream image_path;
-        image_path << image_folder << "/" << std::setw(8) << std::setfill('0') << problems[i].ref_image_id << ".jpg";
-        cv::Mat_<cv::Vec3b> image = cv::imread(image_path.str(), cv::IMREAD_COLOR);
-        std::stringstream cam_path;
-        cam_path << cam_folder << "/" << std::setw(8) << std::setfill('0') << problems[i].ref_image_id << "_cam.txt";
-        Camera camera = ReadCamera(cam_path.str());
-        std::stringstream result_path;
-        result_path << dense_folder << "/HPM" << "/2333_" << std::setw(8) << std::setfill('0') << problems[i].ref_image_id;
-        std::string result_folder = result_path.str();
-        std::string suffix = "/depths.dmb";
-        if (geom_consistency) {
-            suffix = "/depths_geom.dmb";
-        }
-        std::string depth_path = result_folder + suffix;
-        std::string normal_path = result_folder + "/normals.dmb";
-        cv::Mat_<float> depth;
-        cv::Mat_<cv::Vec3f> normal;
-        readDepthDmb(depth_path, depth);
-        readNormalDmb(normal_path, normal);
+    {
+        BENCH_PHASE("fusion.load");
+        for (size_t i = 0; i < num_images; ++i) {
+            std::cout << "Reading image " << std::setw(8) << std::setfill('0') << i << "..." << std::endl;
+            std::stringstream image_path;
+            image_path << image_folder << "/" << std::setw(8) << std::setfill('0') << problems[i].ref_image_id << ".jpg";
+            cv::Mat_<cv::Vec3b> image = cv::imread(image_path.str(), cv::IMREAD_COLOR);
+            std::stringstream cam_path;
+            cam_path << cam_folder << "/" << std::setw(8) << std::setfill('0') << problems[i].ref_image_id << "_cam.txt";
+            Camera camera = ReadCamera(cam_path.str());
+            std::stringstream result_path;
+            result_path << dense_folder << "/HPM" << "/2333_" << std::setw(8) << std::setfill('0') << problems[i].ref_image_id;
+            std::string result_folder = result_path.str();
+            std::string suffix = "/depths.dmb";
+            if (geom_consistency) {
+                suffix = "/depths_geom.dmb";
+            }
+            std::string depth_path = result_folder + suffix;
+            std::string normal_path = result_folder + "/normals.dmb";
+            cv::Mat_<float> depth;
+            cv::Mat_<cv::Vec3f> normal;
+            readDepthDmb(depth_path, depth);
+            readNormalDmb(normal_path, normal);
 
-        cv::Mat_<cv::Vec3b> scaled_image;
-        RescaleImageAndCamera(image, scaled_image, depth, camera);
-        images.push_back(scaled_image);
-        cameras.push_back(camera);
-        depths.push_back(depth);
-        normals.push_back(normal);
-        cv::Mat mask = cv::Mat::zeros(depth.rows, depth.cols, CV_8UC1);
-        masks.push_back(mask);
+            cv::Mat_<cv::Vec3b> scaled_image;
+            RescaleImageAndCamera(image, scaled_image, depth, camera);
+            images.push_back(scaled_image);
+            cameras.push_back(camera);
+            depths.push_back(depth);
+            normals.push_back(normal);
+            cv::Mat mask = cv::Mat::zeros(depth.rows, depth.cols, CV_8UC1);
+            masks.push_back(mask);
+        }
     }
 
     std::vector<PointList> PointCloud;
     PointCloud.clear();
 
-    for (size_t i = 0; i < num_images; ++i) {
-        std::cout << "Fusing image " << std::setw(8) << std::setfill('0') << i << "..." << std::endl;
-        const int cols = depths[i].cols;
-        const int rows = depths[i].rows;
-        int num_ngb = problems[i].src_image_ids.size();
-        std::vector<int2> used_list(num_ngb, make_int2(-1, -1));
-        for (int r = 0; r < rows; ++r) {
-            for (int c = 0; c < cols; ++c) {
-                if (masks[i].at<uchar>(r, c) == 1)
-                    continue;
-                float ref_depth = depths[i].at<float>(r, c);
-                cv::Vec3f ref_normal = normals[i].at<cv::Vec3f>(r, c);
+    {
+        BENCH_PHASE("fusion.consistency");
+        for (size_t i = 0; i < num_images; ++i) {
+            std::cout << "Fusing image " << std::setw(8) << std::setfill('0') << i << "..." << std::endl;
+            const int cols = depths[i].cols;
+            const int rows = depths[i].rows;
+            int num_ngb = problems[i].src_image_ids.size();
+            std::vector<int2> used_list(num_ngb, make_int2(-1, -1));
+            for (int r = 0; r < rows; ++r) {
+                for (int c = 0; c < cols; ++c) {
+                    if (masks[i].at<uchar>(r, c) == 1)
+                        continue;
+                    float ref_depth = depths[i].at<float>(r, c);
+                    cv::Vec3f ref_normal = normals[i].at<cv::Vec3f>(r, c);
 
-                if (ref_depth <= 0.0)
-                    continue;
+                    if (ref_depth <= 0.0)
+                        continue;
 
-                float3 PointX = Get3DPointonWorld(c, r, ref_depth, cameras[i]);
-                float3 consistent_Point = PointX;
-                cv::Vec3f consistent_normal = ref_normal;
-                float consistent_Color[3] = { (float)images[i].at<cv::Vec3b>(r, c)[0], (float)images[i].at<cv::Vec3b>(r, c)[1], (float)images[i].at<cv::Vec3b>(r, c)[2] };
-                int num_consistent = 0;
-                float dynamic_consistency = 0;
-
-                for (int j = 0; j < num_ngb; ++j) {
-                    int src_id = problems[i].src_image_ids[j];
-                    const int src_cols = depths[src_id].cols;
-                    const int src_rows = depths[src_id].rows;
-                    float2 point;
-                    float proj_depth;
-                    ProjectonCamera(PointX, cameras[src_id], point, proj_depth);
-                    int src_r = int(point.y + 0.5f);
-                    int src_c = int(point.x + 0.5f);
-                    if (src_c >= 0 && src_c < src_cols && src_r >= 0 && src_r < src_rows) {
-                        if (masks[src_id].at<uchar>(src_r, src_c) == 1)
-                            continue;
-
-                        float src_depth = depths[src_id].at<float>(src_r, src_c);
-                        cv::Vec3f src_normal = normals[src_id].at<cv::Vec3f>(src_r, src_c);
-                        if (src_depth <= 0.0)
-                            continue;
-
-                        float3 tmp_X = Get3DPointonWorld(src_c, src_r, src_depth, cameras[src_id]);
-                        float2 tmp_pt;
-                        ProjectonCamera(tmp_X, cameras[i], tmp_pt, proj_depth);
-                        float reproj_error = sqrt(pow(c - tmp_pt.x, 2) + pow(r - tmp_pt.y, 2));
-                        float relative_depth_diff = fabs(proj_depth - ref_depth) / ref_depth;
-                        float angle = GetAngle(ref_normal, src_normal);
-
-                        if (reproj_error < 2.0f && relative_depth_diff < 0.01f && angle < 0.174533f) {
-                            used_list[j].x = src_c;
-                            used_list[j].y = src_r;
-
-                            float tmp_index = reproj_error + 200 * relative_depth_diff + angle * 10;
-                            float cons = exp(-tmp_index);
-                            dynamic_consistency += exp(-tmp_index);
-                            num_consistent++;
-                        }
-                    }
-                }
-
-                if (num_consistent >= 1 && (dynamic_consistency > 0.3 * num_consistent)) {
-                    PointList point3D;
-                    point3D.coord = consistent_Point;
-                    point3D.normal = make_float3(consistent_normal[0], consistent_normal[1], consistent_normal[2]);
-                    point3D.color = make_float3(consistent_Color[0], consistent_Color[1], consistent_Color[2]);
-                    PointCloud.push_back(point3D);
+                    float3 PointX = Get3DPointonWorld(c, r, ref_depth, cameras[i]);
+                    float3 consistent_Point = PointX;
+                    cv::Vec3f consistent_normal = ref_normal;
+                    float consistent_Color[3] = { (float)images[i].at<cv::Vec3b>(r, c)[0], (float)images[i].at<cv::Vec3b>(r, c)[1], (float)images[i].at<cv::Vec3b>(r, c)[2] };
+                    int num_consistent = 0;
+                    float dynamic_consistency = 0;
 
                     for (int j = 0; j < num_ngb; ++j) {
-                        if (used_list[j].x == -1)
-                            continue;
-                        masks[problems[i].src_image_ids[j]].at<uchar>(used_list[j].y, used_list[j].x) = 1;
+                        int src_id = problems[i].src_image_ids[j];
+                        const int src_cols = depths[src_id].cols;
+                        const int src_rows = depths[src_id].rows;
+                        float2 point;
+                        float proj_depth;
+                        ProjectonCamera(PointX, cameras[src_id], point, proj_depth);
+                        int src_r = int(point.y + 0.5f);
+                        int src_c = int(point.x + 0.5f);
+                        if (src_c >= 0 && src_c < src_cols && src_r >= 0 && src_r < src_rows) {
+                            if (masks[src_id].at<uchar>(src_r, src_c) == 1)
+                                continue;
+
+                            float src_depth = depths[src_id].at<float>(src_r, src_c);
+                            cv::Vec3f src_normal = normals[src_id].at<cv::Vec3f>(src_r, src_c);
+                            if (src_depth <= 0.0)
+                                continue;
+
+                            float3 tmp_X = Get3DPointonWorld(src_c, src_r, src_depth, cameras[src_id]);
+                            float2 tmp_pt;
+                            ProjectonCamera(tmp_X, cameras[i], tmp_pt, proj_depth);
+                            float reproj_error = sqrt(pow(c - tmp_pt.x, 2) + pow(r - tmp_pt.y, 2));
+                            float relative_depth_diff = fabs(proj_depth - ref_depth) / ref_depth;
+                            float angle = GetAngle(ref_normal, src_normal);
+
+                            if (reproj_error < 2.0f && relative_depth_diff < 0.01f && angle < 0.174533f) {
+                                used_list[j].x = src_c;
+                                used_list[j].y = src_r;
+
+                                float tmp_index = reproj_error + 200 * relative_depth_diff + angle * 10;
+                                float cons = exp(-tmp_index);
+                                dynamic_consistency += exp(-tmp_index);
+                                num_consistent++;
+                            }
+                        }
+                    }
+
+                    if (num_consistent >= 1 && (dynamic_consistency > 0.3 * num_consistent)) {
+                        PointList point3D;
+                        point3D.coord = consistent_Point;
+                        point3D.normal = make_float3(consistent_normal[0], consistent_normal[1], consistent_normal[2]);
+                        point3D.color = make_float3(consistent_Color[0], consistent_Color[1], consistent_Color[2]);
+                        PointCloud.push_back(point3D);
+
+                        for (int j = 0; j < num_ngb; ++j) {
+                            if (used_list[j].x == -1)
+                                continue;
+                            masks[problems[i].src_image_ids[j]].at<uchar>(used_list[j].y, used_list[j].x) = 1;
+                        }
                     }
                 }
             }
@@ -630,12 +692,16 @@ void RunFusion(std::string& dense_folder, const std::vector<Problem>& problems, 
     }
 
     std::string ply_path = dense_folder + "/HPM/HPM_model.ply";
-    StoreColorPlyFileBinaryPointCloud(ply_path, PointCloud);
+    {
+        BENCH_PHASE("output_write");
+        StoreColorPlyFileBinaryPointCloud(ply_path, PointCloud);
+    }
 }
 
 
 int main(int argc, char** argv)
 {
+    BENCH_PHASE("run");
     if (argc < 2) {
         std::cout << "USAGE: HPM dense_folder" << std::endl;
         return -1;
@@ -643,7 +709,10 @@ int main(int argc, char** argv)
 
     std::string dense_folder = argv[1];
     std::vector<Problem> problems;
-    GenerateSampleList(dense_folder, problems);
+    {
+        BENCH_PHASE("problem_list");
+        GenerateSampleList(dense_folder, problems);
+    }
 
     std::string output_folder = dense_folder + std::string("/HPM");
     std::filesystem::create_directories(output_folder);
