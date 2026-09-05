@@ -3,6 +3,11 @@
 #include "HPM.h"
 #include "bench_timer.h"
 
+// Upstream writes depths_prior.dmb once per level-2 prior pass. The campaign
+// turns that write off with --no-debug-output; the default keeps the released
+// behaviour.
+static bool no_debug_output = false;
+
 void GenerateSampleList(const std::string& dense_folder, std::vector<Problem>& problems)
 {
     std::string cluster_list_path = dense_folder + std::string("/pair.txt");
@@ -495,7 +500,7 @@ void ProcessProblem(const std::string& dense_folder, const Problem& problem, boo
                         }
                     }
                 }
-                {
+                if (!no_debug_output) {
                     BENCH_PHASE("depthmap_write.debug");
                     std::string depth_path = result_folder + "/depths_prior.dmb";
                     writeDepthDmb(depth_path, priordepths);
@@ -703,11 +708,16 @@ int main(int argc, char** argv)
 {
     BENCH_PHASE("run");
     if (argc < 2) {
-        std::cout << "USAGE: HPM dense_folder" << std::endl;
+        std::cout << "USAGE: HPM dense_folder [--no-debug-output]" << std::endl;
         return -1;
     }
 
     std::string dense_folder = argv[1];
+    for (int i = 2; i < argc; ++i) {
+        if (std::string(argv[i]) == "--no-debug-output") {
+            no_debug_output = true;
+        }
+    }
     std::vector<Problem> problems;
     {
         BENCH_PHASE("problem_list");
